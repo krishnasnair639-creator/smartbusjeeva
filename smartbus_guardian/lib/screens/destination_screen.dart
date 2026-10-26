@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'login_screen.dart'; // for kPrimaryPurple, kBackground, kCardWhite
 import '../services/auth_service.dart';
+import '../services/api_service.dart';
 import '../services/saved_destination_service.dart';
 import '../services/theme_service.dart';
 
@@ -41,83 +42,31 @@ class JourneyPlan {
 
 Future<List<Destination>> nearbyBusStopsAt(
   LatLng location, {
-  int radiusMeters = 800,
+  int radiusMeters = 3000,
 }) async {
-  final query =
-      '[out:json][timeout:15];('
-      'node(around:$radiusMeters,${location.latitude},${location.longitude})[highway=bus_stop];'
-      'way(around:$radiusMeters,${location.latitude},${location.longitude})[highway=bus_stop];'
-      'node(around:$radiusMeters,${location.latitude},${location.longitude})[public_transport=platform][bus=yes];'
-      'way(around:$radiusMeters,${location.latitude},${location.longitude})[public_transport=platform][bus=yes];'
-      ');out center tags;';
-
   try {
-    final uri = Uri.https('overpass-api.de', '/api/interpreter', {
-      'data': query,
-    });
-    final response = await http
-        .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})
-        .timeout(const Duration(seconds: 12));
-    if (response.statusCode != 200) return [];
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final elements = data['elements'] as List<dynamic>? ?? [];
-    final stops = <Destination>[];
-    final seen = <String>{};
-
-    for (final element in elements) {
-      final item = element as Map<String, dynamic>;
-      final tags = item['tags'] as Map<String, dynamic>? ?? {};
-      final center = item['center'] as Map<String, dynamic>?;
-      final latitude = (item['lat'] ?? center?['lat']) as num?;
-      final longitude = (item['lon'] ?? center?['lon']) as num?;
-      if (latitude == null || longitude == null) continue;
-
-      final lat = latitude.toDouble();
-      final lon = longitude.toDouble();
-      final distance = Geolocator.distanceBetween(
-        location.latitude,
-        location.longitude,
-        lat,
-        lon,
+    final response = await ApiService.getNearbyBusStops(
+      latitude: location.latitude,
+      longitude: location.longitude,
+      radius: radiusMeters,
+    );
+    
+    return response.take(15).map((item) {
+      final distance = (item['distance_meters'] as num).toDouble();
+      final formattedDistance = distance < 1000
+          ? '${distance.round()} m away'
+          : '${(distance / 1000).toStringAsFixed(1)} km away';
+          
+      return Destination(
+        name: item['name'].toString(),
+        subtitle: formattedDistance,
+        icon: Icons.directions_bus_outlined,
+        latitude: (item['latitude'] as num).toDouble(),
+        longitude: (item['longitude'] as num).toDouble(),
       );
-      if (distance > radiusMeters) continue;
-
-      final name = (tags['name'] ?? tags['name:en'] ?? 'Bus stop').toString();
-      final key = '${lat.toStringAsFixed(5)},${lon.toStringAsFixed(5)}';
-      if (!seen.add(key)) continue;
-
-      stops.add(
-        Destination(
-          name: name,
-          subtitle: distance < 1000
-              ? '${distance.round()} m away'
-              : '${(distance / 1000).toStringAsFixed(1)} km away',
-          icon: Icons.directions_bus_outlined,
-          latitude: lat,
-          longitude: lon,
-        ),
-      );
-    }
-
-    stops.sort((first, second) {
-      final firstDistance = Geolocator.distanceBetween(
-        location.latitude,
-        location.longitude,
-        first.latitude!,
-        first.longitude!,
-      );
-      final secondDistance = Geolocator.distanceBetween(
-        location.latitude,
-        location.longitude,
-        second.latitude!,
-        second.longitude!,
-      );
-      return firstDistance.compareTo(secondDistance);
-    });
-
-    return stops.take(8).toList();
-  } catch (_) {
+    }).toList();
+  } catch (error) {
+    debugPrint('Error fetching nearby bus stops: $error');
     return [];
   }
 }
@@ -165,6 +114,58 @@ List<Destination> _sortByDistance(
   }).toList();
 }
 
+const List<Destination> kKeralaHubs = [
+  Destination(
+    name: 'Trivandrum KSRTC (Thampanoor)',
+    subtitle: 'Major Bus Terminal, Thiruvananthapuram',
+    icon: Icons.account_balance_outlined,
+    latitude: 8.4862,
+    longitude: 76.9515,
+  ),
+  Destination(
+    name: 'Vyttila Mobility Hub, Kochi',
+    subtitle: 'Major Bus Terminal, Ernakulam',
+    icon: Icons.account_balance_outlined,
+    latitude: 9.9701,
+    longitude: 76.3195,
+  ),
+  Destination(
+    name: 'Kozhikode KSRTC',
+    subtitle: 'Major Bus Terminal, Kozhikode',
+    icon: Icons.account_balance_outlined,
+    latitude: 11.2464,
+    longitude: 75.7831,
+  ),
+  Destination(
+    name: 'Thrissur KSRTC',
+    subtitle: 'Major Bus Terminal, Thrissur',
+    icon: Icons.account_balance_outlined,
+    latitude: 10.5186,
+    longitude: 76.2132,
+  ),
+  Destination(
+    name: 'Kollam KSRTC',
+    subtitle: 'Major Bus Terminal, Kollam',
+    icon: Icons.account_balance_outlined,
+    latitude: 8.8893,
+    longitude: 76.5925,
+  ),
+  Destination(
+    name: 'Kannur KSRTC',
+    subtitle: 'Major Bus Terminal, Kannur',
+    icon: Icons.account_balance_outlined,
+    latitude: 11.8744,
+    longitude: 75.3695,
+  ),
+  Destination(
+    name: 'Palakkad KSRTC',
+    subtitle: 'Major Bus Terminal, Palakkad',
+    icon: Icons.account_balance_outlined,
+    latitude: 10.7681,
+    longitude: 76.6548,
+  ),
+];
+
 class DestinationScreen extends StatefulWidget {
   const DestinationScreen({super.key});
 
@@ -180,6 +181,15 @@ class _DestinationScreenState extends State<DestinationScreen> {
   Destination? _selected;
   int? _userId;
   bool _syncWithBackend = false;
+  
+  Timer? _searchDebounce;
+  bool _isSearchingApi = false;
+  List<Destination> _apiSearchResults = [];
+  
+  // When a user selects a place from search, we fetch and show bus stops near it.
+  Destination? _searchedPlace;
+  List<Destination> _searchedPlaceBusStops = [];
+  bool _isLoadingSearchedStops = false;
 
   @override
   void initState() {
@@ -341,14 +351,82 @@ class _DestinationScreenState extends State<DestinationScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _performPlaceSearch(String query) async {
+    if (query.trim().isEmpty) {
+      setState(() {
+        _apiSearchResults = [];
+        _isSearchingApi = false;
+      });
+      return;
+    }
+
+    setState(() => _isSearchingApi = true);
+    
+    try {
+      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+        'q': query,
+        'format': 'jsonv2',
+        'limit': '5',
+      });
+      final response = await http
+          .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})
+          .timeout(const Duration(seconds: 12));
+          
+      if (response.statusCode == 200) {
+        final results = jsonDecode(response.body) as List<dynamic>;
+        final List<Destination> places = results.map((result) {
+          final item = result as Map<String, dynamic>;
+          return Destination(
+            name: item['name']?.toString().split(',').first ?? query,
+            subtitle: item['display_name']?.toString() ?? 'Place',
+            icon: Icons.place_outlined,
+            latitude: double.tryParse(item['lat']?.toString() ?? ''),
+            longitude: double.tryParse(item['lon']?.toString() ?? ''),
+          );
+        }).toList();
+        
+        if (mounted) {
+          setState(() {
+            _apiSearchResults = places;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Place search error: $e');
+    } finally {
+      if (mounted) setState(() => _isSearchingApi = false);
+    }
+  }
+
+  Future<void> _fetchStopsNearPlace(Destination place) async {
+    if (!place.hasCoordinates) return;
+    
+    setState(() {
+      _searchedPlace = place;
+      _isLoadingSearchedStops = true;
+      _searchedPlaceBusStops = [];
+    });
+    
+    final stops = await nearbyBusStopsAt(LatLng(place.latitude!, place.longitude!));
+    
+    if (mounted) {
+      setState(() {
+        _searchedPlaceBusStops = stops;
+        _isLoadingSearchedStops = false;
+      });
+    }
   }
 
   List<Destination> get _sortedNearbyStops => _nearbyStops;
 
   List<Destination> get _allDestinations => [
     ..._savedDestinations,
+    ...kKeralaHubs,
     ..._sortedNearbyStops,
   ];
 
@@ -479,7 +557,16 @@ class _DestinationScreenState extends State<DestinationScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: TextField(
                 controller: _searchController,
-                onChanged: (value) => setState(() => _query = value),
+                onChanged: (value) {
+                  setState(() {
+                    _query = value;
+                    _searchedPlace = null;
+                  });
+                  if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
+                  _searchDebounce = Timer(const Duration(milliseconds: 600), () {
+                    _performPlaceSearch(value);
+                  });
+                },
                 decoration: InputDecoration(
                   hintText: 'Where are you going?',
                   prefixIcon: Icon(
@@ -504,19 +591,68 @@ class _DestinationScreenState extends State<DestinationScreen> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 children: [
-                  if (isSearching) ...[
-                    if (filteredAll.isEmpty)
-                      _buildTile(
-                        Destination(
-                          name: _query.trim(),
-                          subtitle:
-                              'Use as destination (pick exact spot on map)',
-                          icon: Icons.edit_location_alt_outlined,
+                  if (_searchedPlace != null) ...[
+                    // Showing bus stops near the searched place
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Bus stops near ${_searchedPlace!.name}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: AppThemeService.instance.primaryText,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => setState(() => _searchedPlace = null),
+                          child: const Text('Clear'),
+                        )
+                      ],
+                    ),
+                    if (_isLoadingSearchedStops)
+                      const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (_searchedPlaceBusStops.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Center(
+                          child: Text(
+                            'No bus stops found near this location in OpenStreetMap.',
+                            textAlign: TextAlign.center,
+                          ),
                         ),
                       )
                     else ...[
+                      ..._searchedPlaceBusStops.map(_buildTile),
+                      const SizedBox(height: 16),
+                    ],
+                  ] else if (isSearching) ...[
+                    // Showing search results
+                    if (_isSearchingApi)
+                      const Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Center(child: CircularProgressIndicator()),
+                      ),
+                      
+                    if (filteredAll.isNotEmpty) ...[
+                      const _SectionLabel('From Saved & Nearby'),
                       ...filteredAll.map(_buildTile),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
+                    ],
+                    
+                    if (_apiSearchResults.isNotEmpty) ...[
+                      const _SectionLabel('Online Search Results'),
+                      ..._apiSearchResults.map((place) => DestinationOptionTile(
+                        destination: place,
+                        selected: false,
+                        onTap: () => _fetchStopsNearPlace(place),
+                      )),
+                    ],
+                    
+                    if (filteredAll.isEmpty && _apiSearchResults.isEmpty && !_isSearchingApi)
                       _buildTile(
                         Destination(
                           name: _query.trim(),
@@ -525,13 +661,17 @@ class _DestinationScreenState extends State<DestinationScreen> {
                           icon: Icons.edit_location_alt_outlined,
                         ),
                       ),
-                    ],
                   ] else ...[
                     if (filteredSaved.isNotEmpty) ...[
                       const _SectionLabel('Saved Destinations'),
                       ...filteredSaved.map(_buildTile),
                       const SizedBox(height: 16),
                     ],
+                    
+                    const _SectionLabel('Kerala Bus Terminals'),
+                    ..._filter(kKeralaHubs).map(_buildTile),
+                    const SizedBox(height: 16),
+
                     if (filteredNearby.isNotEmpty) ...[
                       const _SectionLabel('Nearby Stops'),
                       ...filteredNearby.map(_buildTile),
@@ -601,10 +741,20 @@ class StartingPointScreen extends StatefulWidget {
 }
 
 class _StartingPointScreenState extends State<StartingPointScreen> {
+  final _searchController = TextEditingController();
   List<Destination> _savedDestinations = [];
   List<Destination> _nearbyStops = [];
   Position? _currentPosition;
   Destination? _selected;
+  
+  String _query = '';
+  Timer? _searchDebounce;
+  bool _isSearchingApi = false;
+  List<Destination> _apiSearchResults = [];
+  
+  Destination? _searchedPlace;
+  List<Destination> _searchedPlaceBusStops = [];
+  bool _isLoadingSearchedStops = false;
 
   @override
   void initState() {
@@ -659,6 +809,79 @@ class _StartingPointScreenState extends State<StartingPointScreen> {
         if (mounted) setState(() => _nearbyStops = stops);
       }
     } catch (_) {}
+  }
+  
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _performPlaceSearch(String query) async {
+    if (query.trim().isEmpty) {
+      setState(() {
+        _apiSearchResults = [];
+        _isSearchingApi = false;
+      });
+      return;
+    }
+
+    setState(() => _isSearchingApi = true);
+    
+    try {
+      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+        'q': query,
+        'format': 'jsonv2',
+        'limit': '5',
+      });
+      final response = await http
+          .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})
+          .timeout(const Duration(seconds: 12));
+          
+      if (response.statusCode == 200) {
+        final results = jsonDecode(response.body) as List<dynamic>;
+        final List<Destination> places = results.map((result) {
+          final item = result as Map<String, dynamic>;
+          return Destination(
+            name: item['name']?.toString().split(',').first ?? query,
+            subtitle: item['display_name']?.toString() ?? 'Place',
+            icon: Icons.place_outlined,
+            latitude: double.tryParse(item['lat']?.toString() ?? ''),
+            longitude: double.tryParse(item['lon']?.toString() ?? ''),
+          );
+        }).toList();
+        
+        if (mounted) {
+          setState(() {
+            _apiSearchResults = places;
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Place search error: $e');
+    } finally {
+      if (mounted) setState(() => _isSearchingApi = false);
+    }
+  }
+
+  Future<void> _fetchStopsNearPlace(Destination place) async {
+    if (!place.hasCoordinates) return;
+    
+    setState(() {
+      _searchedPlace = place;
+      _isLoadingSearchedStops = true;
+      _searchedPlaceBusStops = [];
+    });
+    
+    final stops = await nearbyBusStopsAt(LatLng(place.latitude!, place.longitude!));
+    
+    if (mounted) {
+      setState(() {
+        _searchedPlaceBusStops = stops;
+        _isLoadingSearchedStops = false;
+      });
+    }
   }
 
   Destination get _currentLocation => Destination(
@@ -749,7 +972,7 @@ class _StartingPointScreenState extends State<StartingPointScreen> {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    'Choose a nearby stop, place, or your current location.',
+                    'Search for a place, or pick a nearby stop.',
                     style: TextStyle(
                       fontSize: 12,
                       color: AppThemeService.instance.secondaryText,
@@ -758,22 +981,128 @@ class _StartingPointScreenState extends State<StartingPointScreen> {
                 ],
               ),
             ),
+            
+            // Search field
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) {
+                  setState(() {
+                    _query = value;
+                    _searchedPlace = null;
+                  });
+                  if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
+                  _searchDebounce = Timer(const Duration(milliseconds: 600), () {
+                    _performPlaceSearch(value);
+                  });
+                },
+                decoration: InputDecoration(
+                  hintText: 'Search starting point...',
+                  prefixIcon: Icon(
+                    Icons.search,
+                    color: AppThemeService.instance.secondaryText,
+                  ),
+                  filled: true,
+                  fillColor: kCardWhite,
+                  contentPadding: const EdgeInsets.symmetric(
+                    vertical: 14,
+                    horizontal: 12,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 children: [
-                  const _SectionLabel('FROM'),
-                  DestinationOptionTile(
-                    destination: _currentLocation,
-                    selected: _selected?.name == 'Current Location',
-                    onTap: () => setState(() => _selected = _currentLocation),
-                  ),
-                  const SizedBox(height: 12),
-                  const _SectionLabel('Nearby Bus Stops'),
-                  ...nearbyStops.map(_buildTile),
-                  const SizedBox(height: 8),
-                  const _SectionLabel('Nearby Places'),
-                  ...nearbyPlaces.map(_buildTile),
+                  if (_query.trim().isNotEmpty) ...[
+                    if (_searchedPlace != null) ...[
+                      // Showing bus stops near the searched place
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Bus stops near ${_searchedPlace!.name}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: AppThemeService.instance.primaryText,
+                              ),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => setState(() => _searchedPlace = null),
+                            child: const Text('Clear'),
+                          )
+                        ],
+                      ),
+                      if (_isLoadingSearchedStops)
+                        const Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
+                      else if (_searchedPlaceBusStops.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Center(
+                            child: Text(
+                              'No bus stops found near this location in OpenStreetMap.',
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      else ...[
+                        ..._searchedPlaceBusStops.map(_buildTile),
+                        const SizedBox(height: 16),
+                      ],
+                    ] else ...[
+                      // Showing search results
+                      if (_isSearchingApi)
+                        const Padding(
+                          padding: EdgeInsets.all(20),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                        
+                      if (_apiSearchResults.isNotEmpty) ...[
+                        const _SectionLabel('Online Search Results'),
+                        ..._apiSearchResults.map((place) => DestinationOptionTile(
+                          destination: place,
+                          selected: false,
+                          onTap: () => _fetchStopsNearPlace(place),
+                        )),
+                      ],
+                      
+                      if (_apiSearchResults.isEmpty && !_isSearchingApi)
+                        _buildTile(
+                          Destination(
+                            name: _query.trim(),
+                            subtitle: 'Use as starting point (pick exact spot on map)',
+                            icon: Icons.edit_location_alt_outlined,
+                          ),
+                        ),
+                    ]
+                  ] else ...[
+                    const _SectionLabel('FROM'),
+                    DestinationOptionTile(
+                      destination: _currentLocation,
+                      selected: _selected?.name == 'Current Location',
+                      onTap: () => setState(() => _selected = _currentLocation),
+                    ),
+                    const SizedBox(height: 12),
+                    const _SectionLabel('Nearby Bus Stops'),
+                    ...nearbyStops.map(_buildTile),
+                    const SizedBox(height: 8),
+                    const _SectionLabel('Nearby Places / Saved'),
+                    ...nearbyPlaces.map(_buildTile),
+                    const SizedBox(height: 8),
+                    const _SectionLabel('Kerala Bus Terminals'),
+                    ...kKeralaHubs.map(_buildTile),
+                  ]
                 ],
               ),
             ),

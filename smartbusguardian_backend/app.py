@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, g
 import sqlite3
 import os
 import datetime
+import requests
 from werkzeug.security import check_password_hash, generate_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
@@ -603,6 +604,112 @@ def record_alert():
     except sqlite3.IntegrityError as error:
         return jsonify({"error": str(error)}), 400
     return jsonify({"success": True, "alert_id": cursor.lastrowid}), 201
+
+
+# ============================================================
+# NEARBY BUS STOPS
+# ============================================================
+
+@app.route("/api/bus-stops/nearby", methods=["GET"])
+def get_nearby_bus_stops():
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Valid lat and lon parameters are required"}), 400
+
+    try:
+        radius = int(request.args.get('radius', 3000))
+        if radius > 5000:
+            radius = 5000
+    except ValueError:
+        radius = 3000
+
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return jsonify({"error": "Coordinates are out of range"}), 400
+
+    overpass_query = f"""
+    [out:json][timeout:15];
+    (
+      node(around:{radius},{lat},{lon})[highway=bus_stop];
+      way(around:{radius},{lat},{lon})[highway=bus_stop];
+      node(around:{radius},{lat},{lon})[public_transport=platform][bus=yes];
+      way(around:{radius},{lat},{lon})[public_transport=platform][bus=yes];
+    );
+    out center tags;
+    """
+
+    try:
+        response = requests.get(
+            "https://overpass-api.de/api/interpreter",
+            params={"data": overpass_query},
+            headers={"User-Agent": "SmartBusGuardian/1.0"},
+            timeout=12
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to fetch bus stops: {str(e)}"}), 502
+    except ValueError:
+        return jsonify({"error": "Invalid response from Overpass API"}), 502
+
+    elements = data.get("elements", [])
+    stops = []
+    seen_coords = set()
+
+    import math
+    def haversine(lat1, lon1, lat2, lon2):
+        R = 6371000  # Radius of earth in meters
+        phi_1 = math.radians(lat1)
+        phi_2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+        a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi_1) * math.cos(phi_2) * math.sin(delta_lambda / 2.0) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+
+    for item in elements:
+        tags = item.get("tags", {})
+        center = item.get("center", {})
+        item_lat = item.get("lat", center.get("lat"))
+        item_lon = item.get("lon", center.get("lon"))
+
+        if item_lat is None or item_lon is None:
+            continue
+
+        item_lat = float(item_lat)
+        item_lon = float(item_lon)
+
+        distance = haversine(lat, lon, item_lat, item_lon)
+        if distance > radius:
+            continue
+
+        name = tags.get("name", tags.get("name:en", "Bus stop")).strip()
+
+        # Deduplicate very close stops (e.g. same stop mapped slightly differently)
+        coord_key = f"{item_lat:.4f},{item_lon:.4f}"
+        if coord_key in seen_coords:
+            continue
+        seen_coords.add(coord_key)
+
+        stops.append({
+            "name": name,
+            "latitude": item_lat,
+            "longitude": item_lon,
+            "distance_meters": distance,
+            "data_source": "OpenStreetMap",
+            "type": "bus_stop"
+        })
+
+    # Sort by distance
+    stops.sort(key=lambda x: x["distance_meters"])
+
+    return jsonify({
+        "success": True,
+        "count": len(stops),
+        "radius_meters": radius,
+        "stops": stops
+    }), 200
 
 
 @app.route("/api/saved-destinations/<int:user_id>", methods=["GET"])

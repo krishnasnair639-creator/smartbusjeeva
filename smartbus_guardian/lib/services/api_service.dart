@@ -239,6 +239,29 @@ class ApiService {
     }
   }
 
+  static Future<List<Map<String, dynamic>>> getNearbyBusStops({
+    required double latitude,
+    required double longitude,
+    int radius = 3000,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/bus-stops/nearby?lat=$latitude&lon=$longitude&radius=$radius',
+      );
+      final response = await http.get(uri, headers: _headers).timeout(_timeout);
+      if (response.statusCode != 200) return [];
+      
+      final data = jsonDecode(response.body);
+      if (data['success'] == true && data['stops'] != null) {
+        return List<Map<String, dynamic>>.from(data['stops']);
+      }
+      return [];
+    } catch (error) {
+      debugPrint('Unable to fetch nearby bus stops from backend: $error');
+      return [];
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> getSavedDestinations(
     int userId,
   ) async {
