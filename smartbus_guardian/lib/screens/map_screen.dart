@@ -171,6 +171,8 @@ class _MapScreenState extends State<MapScreen> {
   bool isReplanning = false;
   bool alertFired = false;
   bool _missedStopDetected = false;
+
+  Timer? _searchDebounce;
   double? _lastDestinationDistanceMeters;
   int _increasingDestinationDistanceFixes = 0;
   int _consecutiveRouteDeviationFixes = 0;
@@ -1751,7 +1753,7 @@ class _MapScreenState extends State<MapScreen> {
         width: 50,
         height: 50,
         child: const Icon(Icons.location_pin, color: Colors.red, size: 45),
-      );
+      ));
     }
     if (currentPosition != null) {
       markers.add(Marker(
@@ -1783,104 +1785,4 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
-
-  // Display any error messages from routing or GPS.
-  Widget _buildErrorMessage() {
-    if (errorMessage == null) return const SizedBox.shrink();
-    return Positioned(
-      top: 80,
-      left: 20,
-      right: 20,
-      child: Material(
-        elevation: 4,
-        borderRadius: BorderRadius.circular(8),
-        color: Colors.redAccent,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(
-            errorMessage!,
-            style: const TextStyle(color: Colors.white),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Notices for tracking status (e.g., alerts, missed stops).
-  Widget _buildTrackingNotices() {
-    // For now just placeholder – can be expanded later.
-    return const SizedBox.shrink();
-  }
-
-  // Card showing destination details.
-  Widget _buildDestinationCard() {
-    if (destinationLabel == null) return const SizedBox.shrink();
-    return Positioned(
-      bottom: 20,
-      left: 20,
-      right: 20,
-      child: Material(
-        elevation: 4,
-        borderRadius: BorderRadius.circular(12),
-        color: Colors.white,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(destinationLabel!, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              if (destinationAddress != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(destinationAddress!, style: const TextStyle(fontSize: 14, color: Colors.black54)),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Move the map camera to the current GPS location.
-  void moveToCurrentLocation() {
-    if (currentPosition == null) return;
-    final target = LatLng(currentPosition!.latitude, currentPosition!.longitude);
-    mapController.move(target, 17);
-  }
-
-  // Clear selected destination.
-  void clearDestination() {
-    setState(() {
-      selectedLocation = null;
-      destinationLabel = null;
-      destinationAddress = null;
-      routePoints = [];
-    });
-  }
-
-  // Exit the map screen, stop tracking and report journey.
-  Future<void> _exitAndReport() async {
-    // Cancel GPS subscription if active.
-    await _positionStream?.cancel();
-    _positionStream = null;
-
-    final active = await JourneyService.instance.getActiveJourney();
-    if (active != null && active.status == 'IN_PROGRESS') {
-      final double? distanceInMeters =
-          routeDistanceMeters ?? remainingDistanceMeters;
-      final bool hasArrived = remainingDistanceMeters != null &&
-          isWithinBusStopArrivalRadius(remainingDistanceMeters!);
-      await JourneyService.instance.endJourney(
-        completed: hasArrived,
-        finalDistanceKm:
-            distanceInMeters != null ? distanceInMeters / 1000 : null,
-      );
-    }
-    
-    await BackgroundTrackingService.instance.stopTracking();
-
-    if (mounted) Navigator.of(context).pop();
-  }
 }
-
