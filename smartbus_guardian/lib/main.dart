@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_screen.dart';
@@ -11,7 +12,9 @@ import 'services/background_tracking_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await BackgroundTrackingService.instance.initialize();
+  if (!kIsWeb) {
+    await BackgroundTrackingService.instance.initialize();
+  }
   unawaited(AppThemeService.instance.load());
   runApp(const SmartBusGuardian());
 }

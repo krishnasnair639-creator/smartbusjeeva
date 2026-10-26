@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -836,8 +837,8 @@ class _MapScreenState extends State<MapScreen> {
         syncWithBackend: user?['backend_synced'] == true,
       );
       
-      // Start Background Service Isolate
-      if (selectedLocation != null) {
+      // Start Background Service Isolate (only on mobile)
+      if (!kIsWeb && selectedLocation != null) {
         await BackgroundTrackingService.instance.startTracking(
           destinationName: destinationLabel ?? 'Destination Stop',
           destLat: selectedLocation!.latitude,
@@ -1109,7 +1110,9 @@ class _MapScreenState extends State<MapScreen> {
     await _positionStream?.cancel();
     _positionStream = null;
     AlertService.instance.stopRepeatingAlert();
-    await BackgroundTrackingService.instance.stopTracking();
+    if (!kIsWeb) {
+      await BackgroundTrackingService.instance.stopTracking();
+    }
 
     if (!mounted) return;
 
@@ -1134,7 +1137,9 @@ class _MapScreenState extends State<MapScreen> {
     await _positionStream?.cancel();
     _positionStream = null;
     AlertService.instance.stopRepeatingAlert();
-    await BackgroundTrackingService.instance.stopTracking();
+    if (!kIsWeb) {
+      await BackgroundTrackingService.instance.stopTracking();
+    }
 
     if (!mounted) return;
 
