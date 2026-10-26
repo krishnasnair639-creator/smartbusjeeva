@@ -262,6 +262,42 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> getTransitRoute({
+    required double startLat,
+    required double startLon,
+    required double endLat,
+    required double endLon,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/transit/route?start_lat=$startLat&start_lon=$startLon&end_lat=$endLat&end_lon=$endLon',
+      );
+      final response = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 16));
+      return jsonDecode(response.body);
+    } catch (error) {
+      debugPrint('Unable to fetch transit route from backend: $error');
+      return {'success': false, 'message': 'Network error fetching bus route'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getAlternateTransitRoute({
+    required double currentLat,
+    required double currentLon,
+    required double destLat,
+    required double destLon,
+  }) async {
+    try {
+      final uri = Uri.parse(
+        '$baseUrl/api/transit/alternate?current_lat=$currentLat&current_lon=$currentLon&dest_lat=$destLat&dest_lon=$destLon',
+      );
+      final response = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 16));
+      return jsonDecode(response.body);
+    } catch (error) {
+      debugPrint('Unable to fetch alternate transit route from backend: $error');
+      return {'success': false, 'message': 'Network error fetching alternate route'};
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> getSavedDestinations(
     int userId,
   ) async {

@@ -254,6 +254,8 @@ class _DestinationScreenState extends State<DestinationScreen> {
           'q': candidate.name,
           'format': 'jsonv2',
           'limit': '1',
+          'countrycodes': 'in',
+          'accept-language': 'en',
         });
         final response = await http
             .get(
@@ -372,6 +374,8 @@ class _DestinationScreenState extends State<DestinationScreen> {
         'q': query,
         'format': 'jsonv2',
         'limit': '5',
+        'countrycodes': 'in',
+        'accept-language': 'en',
       });
       final response = await http
           .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})
@@ -834,6 +838,8 @@ class _StartingPointScreenState extends State<StartingPointScreen> {
         'q': query,
         'format': 'jsonv2',
         'limit': '5',
+        'countrycodes': 'in',
+        'accept-language': 'en',
       });
       final response = await http
           .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})

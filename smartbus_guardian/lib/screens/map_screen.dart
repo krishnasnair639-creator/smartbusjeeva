@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../services/alert_service.dart';
+import '../services/api_service.dart';
 import '../services/journey_service.dart';
 import '../services/background_tracking_service.dart';
 import '../services/theme_service.dart';
@@ -162,6 +163,9 @@ class _MapScreenState extends State<MapScreen> {
   double? routeDistanceMeters;
   double? routeDurationSeconds;
   List<Destination> nearbyBusStops = [];
+  List<Destination> routeBusStops = [];
+  List<Destination> alternateRouteStops = [];
+  String? transitRouteInfo;
   Destination? reachedBusStop;
   double? reachedBusStopDistanceMeters;
   String? routeStatusMessage;
@@ -322,6 +326,7 @@ class _MapScreenState extends State<MapScreen> {
         'limit': '1',
         'addressdetails': '1',
         'countrycodes': 'in',
+        'accept-language': 'en',
       });
 
       final http.Response response = await http.get(
@@ -404,6 +409,38 @@ class _MapScreenState extends State<MapScreen> {
           isSearching = false;
         });
       }
+    }
+  }
+
+  Future<void> fetchVerifiedTransitStops(LatLng start, LatLng destination) async {
+    final result = await ApiService.getTransitRoute(
+      startLat: start.latitude,
+      startLon: start.longitude,
+      endLat: destination.latitude,
+      endLon: destination.longitude,
+    );
+
+    if (!mounted) return;
+
+    if (result['success'] == true && result['verified_route'] == true) {
+      final stopsData = result['stops'] as List<dynamic>? ?? [];
+      setState(() {
+        routeBusStops = stopsData.map((item) {
+          return Destination(
+            name: item['name'].toString(),
+            subtitle: 'Verified route stop',
+            icon: Icons.directions_bus,
+            latitude: (item['latitude'] as num).toDouble(),
+            longitude: (item['longitude'] as num).toDouble(),
+          );
+        }).toList();
+        transitRouteInfo = 'Verified Route: ${result['route_name']} (${result['stops_count']} stops)';
+      });
+    } else {
+      setState(() {
+        routeBusStops = [];
+        transitRouteInfo = result['message'] ?? 'No verified direct bus route relation found in OpenStreetMap.';
+      });
     }
   }
 
@@ -533,6 +570,8 @@ class _MapScreenState extends State<MapScreen> {
 
         _lastRouteUpdate = DateTime.now();
       });
+
+      unawaited(fetchVerifiedTransitStops(start, destination));
 
       // Fit the initial route; while tracking, keep the camera following GPS.
       if (!isTracking && points.length >= 2) {
@@ -852,51 +891,57 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  void _handleMissedStop(double distanceMeters) {
+  Future<void> _handleMissedStop(double distanceMeters) async {
     _missedStopDetected = true;
     final position = currentPosition;
-    Destination? nearestStop;
-    var nearestStopDistance = double.infinity;
-    if (position != null) {
-      for (final stop in nearbyBusStops) {
-        final distance = Geolocator.distanceBetween(
-          position.latitude,
-          position.longitude,
-          stop.latitude!,
-          stop.longitude!,
-        );
-        if (distance < nearestStopDistance) {
-          nearestStop = stop;
-          nearestStopDistance = distance;
-        }
-      }
-    }
+    
+    if (position != null && selectedLocation != null) {
+      final alternateRes = await ApiService.getAlternateTransitRoute(
+        currentLat: position.latitude,
+        currentLon: position.longitude,
+        destLat: selectedLocation!.latitude,
+        destLon: selectedLocation!.longitude,
+      );
 
-    final message = nearestStop == null
-        ? 'You may have passed $destinationLabel. Find a nearby stop and ask for return directions.'
-        : 'You may have passed $destinationLabel. Nearest return stop: ${nearestStop.name} (${formatDistance(nearestStopDistance)} away).';
-    setState(() {
-      routeStatusMessage = message;
-    });
-    unawaited(
-      AlertService.instance.fireMissedStopAlert(
-        destinationName: destinationLabel ?? 'your destination',
-        nearestStopName: nearestStop?.name,
-        distanceMeters: distanceMeters,
-        journeyId:
-            JourneyService.instance.activeJourneyNotifier.value?.backendId,
-      ),
-    );
-    if (position != null && nearestStop != null) {
+      if (mounted && alternateRes['success'] == true) {
+        final stopsData = alternateRes['alternate_stops'] as List<dynamic>? ?? [];
+        setState(() {
+          alternateRouteStops = stopsData.map((item) {
+            return Destination(
+              name: item['name'].toString(),
+              subtitle: 'Alternate return stop',
+              icon: Icons.alt_route,
+              latitude: (item['latitude'] as num).toDouble(),
+              longitude: (item['longitude'] as num).toDouble(),
+            );
+          }).toList();
+
+          routeStatusMessage =
+              'Missed destination! Alternate return route found from ${alternateRes['nearest_return_stop']}.';
+        });
+      } else if (mounted) {
+        setState(() {
+          routeStatusMessage = 'Passed $destinationLabel! Please find nearby return transportation.';
+        });
+      }
+
+      unawaited(
+        AlertService.instance.fireMissedStopAlert(
+          destinationName: destinationLabel ?? 'your destination',
+          nearestStopName: alternateRes['nearest_return_stop']?.toString() ?? 'Nearby Stop',
+          distanceMeters: distanceMeters,
+          journeyId: JourneyService.instance.activeJourneyNotifier.value?.backendId,
+        ),
+      );
+
       unawaited(
         JourneyService.instance.recordMissedStop(
           latitude: position.latitude,
           longitude: position.longitude,
-          nearestReturnStop: nearestStop.name,
+          nearestReturnStop: alternateRes['nearest_return_stop']?.toString() ?? 'Nearby Return Stop',
         ),
       );
     }
-    unawaited(_recalculateAlternativeRoute());
   }
 
   // ============================================================
@@ -1239,6 +1284,46 @@ class _MapScreenState extends State<MapScreen> {
                 ),
               ],
             ),
+
+            if (transitRouteInfo != null) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Icon(Icons.directions_bus, size: 16, color: Colors.deepPurple),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      transitRouteInfo!,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.deepPurple,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+
+            if (routeStatusMessage != null) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      routeStatusMessage!,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.orange,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
 
             if (routeDistanceMeters != null) ...[
               const SizedBox(height: 5),
@@ -1768,6 +1853,37 @@ class _MapScreenState extends State<MapScreen> {
         child: const Icon(Icons.my_location, color: Colors.blue, size: 28),
       ));
     }
+
+    // Intermediate verified bus stops
+    for (final stop in routeBusStops) {
+      if (stop.hasCoordinates) {
+        markers.add(Marker(
+          point: LatLng(stop.latitude!, stop.longitude!),
+          width: 32,
+          height: 32,
+          child: Tooltip(
+            message: stop.name,
+            child: const Icon(Icons.directions_bus, color: Colors.deepPurple, size: 24),
+          ),
+        ));
+      }
+    }
+
+    // Alternate return route stops
+    for (final stop in alternateRouteStops) {
+      if (stop.hasCoordinates) {
+        markers.add(Marker(
+          point: LatLng(stop.latitude!, stop.longitude!),
+          width: 36,
+          height: 36,
+          child: Tooltip(
+            message: 'Alternate: ${stop.name}',
+            child: const Icon(Icons.alt_route, color: Colors.orange, size: 28),
+          ),
+        ));
+      }
+    }
+
     return markers;
   }
 

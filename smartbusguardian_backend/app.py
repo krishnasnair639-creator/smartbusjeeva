@@ -1107,6 +1107,197 @@ def get_sos_history(user_id):
 
 
 # ============================================================
+# VERIFIED TRANSIT ROUTE & ALTERNATE ROUTE (OVERPASS API)
+# ============================================================
+
+@app.route("/api/transit/route", methods=["GET"])
+def get_transit_route():
+    try:
+        start_lat = float(request.args.get("start_lat"))
+        start_lon = float(request.args.get("start_lon"))
+        end_lat = float(request.args.get("end_lat"))
+        end_lon = float(request.args.get("end_lon"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Valid start_lat, start_lon, end_lat, and end_lon parameters are required"}), 400
+
+    overpass_query = f"""
+    [out:json][timeout:25];
+    node(around:800, {start_lat}, {start_lon})[highway=bus_stop]->.startStops;
+    node(around:800, {end_lat}, {end_lon})[highway=bus_stop]->.endStops;
+    relation[type=route][route=bus](bn.startStops)(bn.endStops)->.routes;
+    out tags;
+    node(r.routes)[highway=bus_stop];
+    out tags geom;
+    """
+
+    try:
+        response = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": overpass_query},
+            headers={"User-Agent": "SmartBusGuardian/1.0", "Accept": "*/*"},
+            timeout=15
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "verified_route": False,
+            "message": f"Could not query transit database: {str(exc)}"
+        }), 502
+
+    elements = data.get("elements", [])
+    relations = [e for e in elements if e.get("type") == "relation"]
+    nodes = [e for e in elements if e.get("type") == "node"]
+
+    if not relations:
+        return jsonify({
+            "success": False,
+            "verified_route": False,
+            "message": "No verified direct bus route relation found in OpenStreetMap connecting these locations."
+        }), 200
+
+    primary_route = relations[0]
+    tags = primary_route.get("tags", {})
+    route_name = tags.get("name", tags.get("ref", "Verified Bus Route"))
+    ref = tags.get("ref", "")
+    operator = tags.get("operator", "Public Transit")
+
+    stops = []
+    seen = set()
+
+    import math
+    def dist(lat1, lon1, lat2, lon2):
+        R = 6371000
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+        a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    for node in nodes:
+        node_tags = node.get("tags", {})
+        node_lat = node.get("lat")
+        node_lon = node.get("lon")
+        if node_lat is None or node_lon is None:
+            continue
+
+        stop_name = node_tags.get("name", node_tags.get("name:en", "Bus stop")).strip()
+        key = f"{stop_name}_{round(node_lat, 4)}_{round(node_lon, 4)}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        dist_from_start = dist(start_lat, start_lon, node_lat, node_lon)
+        stops.append({
+            "name": stop_name,
+            "latitude": float(node_lat),
+            "longitude": float(node_lon),
+            "distance_from_start": dist_from_start
+        })
+
+    stops.sort(key=lambda s: s["distance_from_start"])
+
+    return jsonify({
+        "success": True,
+        "verified_route": True,
+        "route_name": route_name,
+        "ref": ref,
+        "operator": operator,
+        "stops_count": len(stops),
+        "stops": stops
+    }), 200
+
+
+@app.route("/api/transit/alternate", methods=["GET"])
+def get_alternate_transit_route():
+    try:
+        current_lat = float(request.args.get("current_lat"))
+        current_lon = float(request.args.get("current_lon"))
+        dest_lat = float(request.args.get("dest_lat"))
+        dest_lon = float(request.args.get("dest_lon"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Valid current_lat, current_lon, dest_lat, and dest_lon are required"}), 400
+
+    # Query nearest bus stop to current location and route back to dest
+    overpass_query = f"""
+    [out:json][timeout:25];
+    node(around:1000, {current_lat}, {current_lon})[highway=bus_stop]->.nearby;
+    out tags geom;
+    node(around:800, {dest_lat}, {dest_lon})[highway=bus_stop]->.destStops;
+    relation[type=route][route=bus](bn.nearby)(bn.destStops)->.routes;
+    out tags;
+    node(r.routes)[highway=bus_stop];
+    out tags geom;
+    """
+
+    try:
+        response = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": overpass_query},
+            headers={"User-Agent": "SmartBusGuardian/1.0", "Accept": "*/*"},
+            timeout=15
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "message": f"Could not calculate alternate transit route: {str(exc)}"
+        }), 502
+
+    elements = data.get("elements", [])
+    nodes = [e for e in elements if e.get("type") == "node"]
+    relations = [e for e in elements if e.get("type") == "relation"]
+
+    if not nodes:
+        return jsonify({
+            "success": False,
+            "message": "No nearby return bus stop or route found."
+        }), 200
+
+    import math
+    def dist(lat1, lon1, lat2, lon2):
+        R = 6371000
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+        a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    # Find nearest return stop
+    nearest_stop = min(nodes, key=lambda n: dist(current_lat, current_lon, float(n["lat"]), float(n["lon"])))
+    nearest_name = nearest_stop.get("tags", {}).get("name", "Nearest Return Bus Stop")
+
+    stops = []
+    seen = set()
+    for n in nodes:
+        name = n.get("tags", {}).get("name", "Bus stop")
+        lat = float(n["lat"])
+        lon = float(n["lon"])
+        key = f"{name}_{round(lat, 4)}_{round(lon, 4)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        stops.append({
+            "name": name,
+            "latitude": lat,
+            "longitude": lon,
+            "distance_from_current": dist(current_lat, current_lon, lat, lon)
+        })
+
+    stops.sort(key=lambda s: s["distance_from_current"])
+
+    return jsonify({
+        "success": True,
+        "nearest_return_stop": nearest_name,
+        "nearest_stop_lat": float(nearest_stop["lat"]),
+        "nearest_stop_lon": float(nearest_stop["lon"]),
+        "verified_route": len(relations) > 0,
+        "route_name": relations[0].get("tags", {}).get("name", "Return Bus Route") if relations else "Return Direction",
+        "alternate_stops": stops
+    }), 200
+
+
+# ============================================================
 # RUN SERVER
 # ============================================================
 

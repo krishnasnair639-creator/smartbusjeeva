@@ -33,11 +33,14 @@ class BackendApiTest(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 201)
-        return response.json["user_id"]
+        token = response.json.get("access_token")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return response.json["user_id"], headers
 
-    def create_journey(self, user_id):
+    def create_journey(self, user_id, headers):
         response = self.client.post(
             "/api/journey/start",
+            headers=headers,
             json={
                 "user_id": user_id,
                 "source_location": "Bus Stop A",
@@ -103,12 +106,13 @@ class BackendApiTest(unittest.TestCase):
         self.assertFalse(login.json["success"])
 
     def test_journey_completion_writes_history_without_duplicates(self):
-        user_id = self.create_user()
-        journey_id = self.create_journey(user_id)
+        user_id, headers = self.create_user()
+        journey_id = self.create_journey(user_id, headers)
 
         for _ in range(2):
             completion = self.client.post(
                 f"/api/journey/{journey_id}/finish",
+                headers=headers,
                 json={
                     "user_id": user_id,
                     "distance_travelled": 3.4,
@@ -117,15 +121,16 @@ class BackendApiTest(unittest.TestCase):
             )
             self.assertEqual(completion.status_code, 200)
 
-        history = self.client.get(f"/api/journey/history/{user_id}")
+        history = self.client.get(f"/api/journey/history/{user_id}", headers=headers)
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.json["journeys"]), 1)
         self.assertEqual(history.json["journeys"][0]["journey_status"], "COMPLETED")
 
     def test_saved_destinations_are_user_scoped_and_deletable(self):
-        user_id = self.create_user()
+        user_id, headers = self.create_user()
         saved = self.client.post(
             "/api/saved-destinations",
+            headers=headers,
             json={
                 "user_id": user_id,
                 "destination_name": "Home",
@@ -135,23 +140,24 @@ class BackendApiTest(unittest.TestCase):
         )
         self.assertEqual(saved.status_code, 201)
 
-        listed = self.client.get(f"/api/saved-destinations/{user_id}")
+        listed = self.client.get(f"/api/saved-destinations/{user_id}", headers=headers)
         self.assertEqual(len(listed.json["destinations"]), 1)
         destination_id = saved.json["destination_id"]
         deleted = self.client.delete(
-            f"/api/saved-destinations/{destination_id}"
+            f"/api/saved-destinations/{destination_id}",
+            headers=headers,
         )
         self.assertEqual(deleted.status_code, 200)
         self.assertEqual(
-            self.client.get(f"/api/saved-destinations/{user_id}").json[
+            self.client.get(f"/api/saved-destinations/{user_id}", headers=headers).json[
                 "destinations"
             ],
             [],
         )
 
     def test_alert_and_missed_stop_records_use_schema_relationships(self):
-        user_id = self.create_user()
-        journey_id = self.create_journey(user_id)
+        user_id, headers = self.create_user()
+        journey_id = self.create_journey(user_id, headers)
         alert = self.client.post(
             "/api/alerts",
             json={
@@ -174,20 +180,22 @@ class BackendApiTest(unittest.TestCase):
 
         completion = self.client.post(
             f"/api/journey/{journey_id}/finish",
+            headers=headers,
             json={
                 "user_id": user_id,
                 "distance_travelled": 3.4,
                 "status": "MISSED",
             },
         )
-        history = self.client.get(f"/api/journey/history/{user_id}")
+        history = self.client.get(f"/api/journey/history/{user_id}", headers=headers)
         self.assertEqual(completion.status_code, 200)
         self.assertEqual(history.json["journeys"][0]["missed_stop_count"], 1)
 
     def test_profile_and_password_updates_persist(self):
-        user_id = self.create_user()
+        user_id, headers = self.create_user()
         profile = self.client.post(
             f"/api/profile/{user_id}",
+            headers=headers,
             json={
                 "full_name": "Updated Passenger",
                 "email": "updated@example.test",
@@ -196,6 +204,7 @@ class BackendApiTest(unittest.TestCase):
         )
         password = self.client.post(
             f"/api/profile/{user_id}/password",
+            headers=headers,
             json={
                 "current_password": "test123",
                 "new_password": "next123",
@@ -213,10 +222,11 @@ class BackendApiTest(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
 
     def test_emergency_contact_and_sos_persistence(self):
-        user_id = self.create_user()
-        journey_id = self.create_journey(user_id)
+        user_id, headers = self.create_user()
+        journey_id = self.create_journey(user_id, headers)
         contact = self.client.post(
             "/api/contacts",
+            headers=headers,
             json={
                 "user_id": user_id,
                 "contact_name": "Trusted Contact",
@@ -226,12 +236,13 @@ class BackendApiTest(unittest.TestCase):
         )
         self.assertEqual(contact.status_code, 201)
         self.assertEqual(
-            len(self.client.get(f"/api/contacts/{user_id}").json["contacts"]),
+            len(self.client.get(f"/api/contacts/{user_id}", headers=headers).json["contacts"]),
             1,
         )
         self.assertEqual(
             self.client.post(
                 "/api/sos",
+                headers=headers,
                 json={
                     "user_id": user_id,
                     "journey_id": journey_id,
@@ -242,15 +253,16 @@ class BackendApiTest(unittest.TestCase):
             201,
         )
         self.assertEqual(
-            len(self.client.get(f"/api/sos/{user_id}").json["alerts"]),
+            len(self.client.get(f"/api/sos/{user_id}", headers=headers).json["alerts"]),
             1,
         )
 
     def test_sos_without_a_journey_does_not_create_a_placeholder_record(self):
-        user_id = self.create_user()
+        user_id, headers = self.create_user()
 
         response = self.client.post(
             "/api/sos",
+            headers=headers,
             json={
                 "user_id": user_id,
                 "latitude": 9.7,
@@ -268,6 +280,7 @@ class BackendApiTest(unittest.TestCase):
 
         missing_user = self.client.post(
             "/api/sos",
+            headers=headers,
             json={"latitude": 9.7, "longitude": 76.6},
         )
         self.assertEqual(missing_user.status_code, 400)
