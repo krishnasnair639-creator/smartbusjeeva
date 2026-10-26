@@ -166,6 +166,8 @@ class _MapScreenState extends State<MapScreen> {
   List<Destination> routeBusStops = [];
   List<Destination> alternateRouteStops = [];
   String? transitRouteInfo;
+  LatLng? _lastTransitStart;
+  LatLng? _lastTransitEnd;
   Destination? reachedBusStop;
   double? reachedBusStopDistanceMeters;
   String? routeStatusMessage;
@@ -413,6 +415,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> fetchVerifiedTransitStops(LatLng start, LatLng destination) async {
+    // Avoid re-fetching if stops are already loaded for this start and destination pair
+    if (routeBusStops.isNotEmpty &&
+        _lastTransitStart == start &&
+        _lastTransitEnd == destination) {
+      debugPrint('[DEBUG] Reusing existing ${routeBusStops.length} route bus stops.');
+      return;
+    }
+
+    debugPrint('[DEBUG] Fetching transit route stops from $start to $destination...');
     final result = await ApiService.getTransitRoute(
       startLat: start.latitude,
       startLon: start.longitude,
@@ -422,25 +433,47 @@ class _MapScreenState extends State<MapScreen> {
 
     if (!mounted) return;
 
-    if (result['success'] == true && result['verified_route'] == true) {
-      final stopsData = result['stops'] as List<dynamic>? ?? [];
-      setState(() {
-        routeBusStops = stopsData.map((item) {
-          return Destination(
-            name: item['name'].toString(),
-            subtitle: 'Verified route stop',
+    final isSuccess = result['success'] == true;
+    final isVerified = result['verified_route'] == true;
+    final stopsData = result['stops'] as List<dynamic>? ?? [];
+
+    debugPrint('[DEBUG] Transit API Response: success=$isSuccess, verified=$isVerified, stops_count=${stopsData.length}');
+
+    if (isSuccess && stopsData.isNotEmpty) {
+      final List<Destination> parsedStops = [];
+      for (final item in stopsData) {
+        if (item is Map<String, dynamic> &&
+            item['latitude'] != null &&
+            item['longitude'] != null) {
+          parsedStops.add(Destination(
+            name: item['name']?.toString() ?? 'Bus Stop',
+            subtitle: isVerified ? 'Verified route stop' : 'Bus stop along path',
             icon: Icons.directions_bus,
             latitude: (item['latitude'] as num).toDouble(),
             longitude: (item['longitude'] as num).toDouble(),
-          );
-        }).toList();
-        transitRouteInfo = 'Verified Route: ${result['route_name']} (${result['stops_count']} stops)';
+          ));
+        }
+      }
+
+      debugPrint('[DEBUG] Successfully parsed ${parsedStops.length} bus stop markers for map rendering.');
+
+      setState(() {
+        routeBusStops = parsedStops;
+        _lastTransitStart = start;
+        _lastTransitEnd = destination;
+        if (isVerified) {
+          transitRouteInfo = 'Verified Route: ${result['route_name']} (${parsedStops.length} stops)';
+        } else {
+          transitRouteInfo = 'Route bus stops (${parsedStops.length} stops)';
+        }
       });
     } else {
-      setState(() {
-        routeBusStops = [];
-        transitRouteInfo = result['message'] ?? 'No verified direct bus route relation found in OpenStreetMap.';
-      });
+      debugPrint('[DEBUG] No stops returned by API. Preserving existing stops count: ${routeBusStops.length}');
+      if (routeBusStops.isEmpty) {
+        setState(() {
+          transitRouteInfo = result['message'] ?? 'No bus stops found along this route.';
+        });
+      }
     }
   }
 
@@ -1061,6 +1094,11 @@ class _MapScreenState extends State<MapScreen> {
       destinationAddress = null;
 
       routePoints = [];
+      routeBusStops = [];
+      alternateRouteStops = [];
+      transitRouteInfo = null;
+      _lastTransitStart = null;
+      _lastTransitEnd = null;
 
       routeDistanceMeters = null;
 

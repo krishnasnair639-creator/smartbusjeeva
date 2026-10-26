@@ -1150,11 +1150,73 @@ def get_transit_route():
     relations = [e for e in elements if e.get("type") == "relation"]
     nodes = [e for e in elements if e.get("type") == "node"]
 
+    import math
+    def dist(lat1, lon1, lat2, lon2):
+        R = 6371000
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+        a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
     if not relations:
+        # Fallback: Query bus stops in bounding box between start and destination
+        min_lat = min(start_lat, end_lat) - 0.005
+        max_lat = max(start_lat, end_lat) + 0.005
+        min_lon = min(start_lon, end_lon) - 0.005
+        max_lon = max(start_lon, end_lon) + 0.005
+
+        bbox_query = f"""
+        [out:json][timeout:15];
+        (
+          node({min_lat},{min_lon},{max_lat},{max_lon})[highway=bus_stop];
+          node({min_lat},{min_lon},{max_lat},{max_lon})[public_transport=platform];
+        );
+        out tags geom;
+        """
+        try:
+            bbox_resp = requests.post(
+                "https://overpass-api.de/api/interpreter",
+                data={"data": bbox_query},
+                headers={"User-Agent": "SmartBusGuardian/1.0", "Accept": "*/*"},
+                timeout=12
+            )
+            if bbox_resp.status_code == 200:
+                bbox_data = bbox_resp.json()
+                nodes = [e for e in bbox_data.get("elements", []) if e.get("type") == "node"]
+        except Exception:
+            pass
+
+        stops = []
+        seen = set()
+        for node in nodes:
+            node_tags = node.get("tags", {})
+            node_lat = node.get("lat")
+            node_lon = node.get("lon")
+            if node_lat is None or node_lon is None:
+                continue
+            stop_name = node_tags.get("name", node_tags.get("name:en", "Bus stop")).strip()
+            key = f"{stop_name}_{round(node_lat, 4)}_{round(node_lon, 4)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            dist_from_start = dist(start_lat, start_lon, node_lat, node_lon)
+            stops.append({
+                "name": stop_name,
+                "latitude": float(node_lat),
+                "longitude": float(node_lon),
+                "distance_from_start": dist_from_start,
+                "data_source": "OpenStreetMap"
+            })
+
+        stops.sort(key=lambda s: s["distance_from_start"])
+
         return jsonify({
-            "success": False,
+            "success": True,
             "verified_route": False,
-            "message": "No verified direct bus route relation found in OpenStreetMap connecting these locations."
+            "route_name": "Road Bus Stops",
+            "message": "No verified direct bus route relation found in OpenStreetMap. Showing bus stops along path.",
+            "stops_count": len(stops),
+            "stops": stops
         }), 200
 
     primary_route = relations[0]
